@@ -1,3 +1,5 @@
+import logging
+
 from confluent_kafka import Consumer
 
 c = Consumer({

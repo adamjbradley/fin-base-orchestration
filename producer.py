@@ -15,6 +15,10 @@ from alpaca.trading.requests import *
 from alpaca.trading.enums import *
 from alpaca.common.exceptions import APIError
 
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
+
 #import broker
 
 #
@@ -48,6 +52,9 @@ class Trades:
 activeContracts = Contracts()
 instrument = "SPY"
 sample_contract = "SPY240716P00515000"
+category = "stocks"                             #stocks/options/crypto
+isMarketOpen = False
+
 
 
 # Please change the following to your own PAPER api key and secret
@@ -133,7 +140,6 @@ def getOptionsContracts(type, underlying_symbols):
         res = trade_client.get_option_contracts(req)
         activeContracts.contracts.extend(res.option_contracts)
 
-
 def getHighOpenInterestContract(contracts):
 
     # get high open_interest contract
@@ -145,27 +151,46 @@ def getHighOpenInterestContract(contracts):
             high_open_interest_contract = contract
     return high_open_interest_contract
 
-def unsubscribe(client, contract):
+
+
+def consumer_thread(contract):
+    global conn
+    conn = client = OptionDataStream(api_key, secret_key, url_override = option_stream_data_wss)
 
     symbols = [
         contract
     ]
 
-    async def option_data_stream_handler(data):
-        publish(data)
+    client.subscribe_quotes(option_data_stream_handler, *symbols)
+    client.subscribe_trades(option_data_stream_handler, *symbols)
+    client.run()
+
+
+
+    conn.subscribe_quotes(print_quote, 'AAPL')
+    conn.run()
+
+async def option_data_stream_handler(data):
+    publish(data)
+
+def unsubscribe(client, instrument, contract):
+
+    symbols = [
+        contract
+    ]
+
+   
+    
 
     client.unsubscribe_quotes(option_data_stream_handler, *symbols)
     client.unsubscribe_trades(option_data_stream_handler, *symbols)
     client.close()
     
-def subscribe(client, contract):
+def subscribe(client, instrument, contract):
     
     symbols = [
         contract
     ]
-
-    async def option_data_stream_handler(data):
-        publish(data)
 
     client.subscribe_quotes(option_data_stream_handler, *symbols)
     client.subscribe_trades(option_data_stream_handler, *symbols)
@@ -193,7 +218,23 @@ def publish(data):
     # callbacks to be triggered.
     p.flush()
 
+ # Wait for market to open.
 
+def awaitMarketOpen(self):
+
+    if (isMarketOpen and self.alpaca.get_clock().is_open):
+        # shut down the web socket
+        isMarketOpen = False
+
+    isMarketOpen = self.alpaca.get_clock().is_open
+    while(not isMarketOpen):
+      clock = self.alpaca.get_clock()
+      openingTime = clock.next_open.replace(tzinfo=datetime.timezone.utc).timestamp()
+      currTime = clock.timestamp.replace(tzinfo=datetime.timezone.utc).timestamp()
+      timeToOpen = int((openingTime - currTime) / 60)
+      print(str(timeToOpen) + " minutes til market open.")
+      time.sleep(60)
+      isMarketOpen = self.alpaca.get_clock().is_open
 
 # Initialise Producer
 
@@ -202,13 +243,20 @@ data = "Connected to broker"
 p.produce('quickstart-events', data.encode('utf-8'), callback=delivery_report)
 
 
-# Start WebSocket
+# Get Active Contracts
 underlying_symbols = [instrument]
 getOptionsContracts("put", underlying_symbols)
 getOptionsContracts("call", underlying_symbols)
+
 high_open_interest_contract = getHighOpenInterestContract(activeContracts)
 
+awaitMarketOpen(self)
 
-#client = OptionDataStream(api_key, secret_key, url_override = option_stream_data_wss)
-#unsubscribe(client, high_open_interest_contract.symbol)
+# Start WebSocket
+#optionsClient = OptionDataStream(api_key, secret_key, url_override = option_stream_data_wss)
+#stockClient = OptionDataStream(api_key, secret_key, url_override = option_stream_data_wss)
+
+
+
+unsubscribe(optionsClient, high_open_interest_contract.symbol)
 #subscribe(client, high_open_interest_contract.symbol)
