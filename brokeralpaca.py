@@ -28,6 +28,9 @@ import pytz
 
 import random
 
+# Stock WS streaming
+from alpaca_trade_api.stream import Stream
+
 # Below are the variables for development this documents
 # Please do not change these variables
 
@@ -148,8 +151,10 @@ class Broker:
 
     self.isConnected = False
 
-    global conn
-    conn = OptionDataStream(self.api_key, self.secret_key, url_override = option_stream_data_wss)
+    global options_conn
+    options_conn = OptionDataStream(self.api_key, self.secret_key, url_override = option_stream_data_wss)
+
+    
 
   def run(self):
 
@@ -190,7 +195,7 @@ class Broker:
       time.sleep(60)
       self.isMarketOpen = self.trade_client.get_clock().is_open
 
-  def nextFriday(self):
+  def thisFriday(self):
       today = datetime.today() 
       next_friday = today + timedelta(5-today.weekday())      
       return next_friday
@@ -252,9 +257,9 @@ class Broker:
       underlying_symbols = self.instrument
 
       # Your background task code here
-      nextFriday = self.nextFriday()
-      self.getOptionsContracts("call", underlying_symbols, nextFriday)    
-      self.getOptionsContracts("put", underlying_symbols, nextFriday)
+      thisFriday = self.thisFriday()
+      self.getOptionsContracts("call", underlying_symbols, thisFriday)    
+      self.getOptionsContracts("put", underlying_symbols, thisFriday)
 
       time.sleep(30)
 
@@ -263,11 +268,11 @@ class Broker:
       #publish(data)
       print('options stream update', data)
 
-  def consumer_thread(self):
+  def start_option_data_stream(self):
             
       try:
         self.isConnected = True
-        conn.run()
+        options_conn.run()
 
       except Exception as e:
         self.isConnected = False
@@ -276,6 +281,10 @@ class Broker:
         # let the execution continue
         pass
 
+  def stop_option_data_stream(self):     
+      if (options_conn._running):
+        options_conn.stop()
+
   def removeOptionsContracts(self, contracts):
       
       symbols = [
@@ -283,9 +292,9 @@ class Broker:
       ]
 
       try:
-        if (conn._running):
-          conn.unsubscribe_quotes(*symbols)
-          conn.unsubscribe_trades(*symbols)
+        if (options_conn._running):
+          options_conn.unsubscribe_quotes(*symbols)
+          options_conn.unsubscribe_trades(*symbols)
       except Exception as e:
           print("You got an exception: {} during execution. continue "
               "execution.".format(e))
@@ -299,9 +308,9 @@ class Broker:
       ]
 
       try:
-        if (conn._running):
-          conn.subscribe_quotes(self.option_data_stream_handler, *symbols)
-          conn.subscribe_trades(self.option_data_stream_handler, *symbols)        
+        if (options_conn._running):
+          options_conn.subscribe_quotes(self.option_data_stream_handler, *symbols)
+          options_conn.subscribe_trades(self.option_data_stream_handler, *symbols)        
       except Exception as e:
                 print("You got an exception: {} during execution. continue "
                     "execution.".format(e))
@@ -309,9 +318,6 @@ class Broker:
                 pass
 
 
-  def stop_consumer_thread(self):     
-      if (conn._running):
-        conn.stop()
 
 # Run the LongShort class
 #ls = Broker()

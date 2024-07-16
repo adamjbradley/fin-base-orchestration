@@ -17,6 +17,9 @@ from brokeralpaca import Broker
 from kafkaproducer import KafkaProducer
 from tradingstrategy import Strategy
 
+#Switch to multiprocessing
+import multiprocessing as mp
+
 # Please change the following to your own PAPER api key and secret
 # You can get them from https://alpaca.markets/
 
@@ -57,17 +60,19 @@ if __name__ == '__main__':
     strategy = Strategy()
     #contracts_to_watch = strategy.SimpleStrategy(broker.activecontracts)
 
-    # Refresh Options Contracts
-    options_contracts_thread = threading.Thread(target=broker.getNewOptionsContracts)
-    options_contracts_thread.daemon = True  # Set the thread as a daemon
-    options_contracts_thread.start()
 
-    # Wait for market to open.
+    # Monitor for market open
     print("Waiting for market to open...")
     wait_for_open = threading.Thread(target=broker.awaitMarketOpen)
     wait_for_open.daemon = True
     wait_for_open.start()
 
+    # Refresh Options Contracts
+    options_contracts_thread = threading.Thread(target=broker.getNewOptionsContracts)
+    options_contracts_thread.daemon = True
+    options_contracts_thread.start()
+
+    
     pool = ThreadPoolExecutor(1)
 
     while 1:
@@ -76,7 +81,6 @@ if __name__ == '__main__':
             logging.info(f"Found {len(broker.allcontracts)} total contracts for {underlying_symbols}")
             # Handle these
             broker.newOptionsContracts = False
-
 
         if broker.updatedOptionsContracts:
             logging.info(f"Found {len(broker.updatedcontracts)} updated contracts for {underlying_symbols}")
@@ -91,13 +95,13 @@ if __name__ == '__main__':
 
         if (broker.isMarketOpen):
             try:
-                pool.submit(broker.consumer_thread(sample_contract))
+                pool.submit(broker.start_option_data_stream())
                 time.sleep(2)
-                broker.stop_consumer_thread()
+                broker.stop_option_data_stream()
                 time.sleep(20)
             except KeyboardInterrupt:
                 print("Interrupted execution by user")
-                broker.stop_consumer_thread()
+                broker.stop_option_data_stream()
                 exit(0)
             except Exception as e:
                 print("You got an exception: {} during execution. continue "
@@ -105,6 +109,6 @@ if __name__ == '__main__':
                 # let the execution continue
                 pass
         else:
-            broker.stop_consumer_thread()
+            broker.stop_option_data_stream()
         
         time.sleep(1)
