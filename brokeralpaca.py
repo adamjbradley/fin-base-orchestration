@@ -35,7 +35,7 @@ trade_api_url = None
 trade_api_wss = None
 data_api_url = None
 option_stream_data_wss = None
-chaos_monkey = True
+chaos_monkey = False
 
 # Please change the following to your own PAPER api key and secret
 # You can get them from https://alpaca.markets/
@@ -61,41 +61,6 @@ class Contracts:
 
     def addContractsFromList(self, new_contracts):
 
-      #for contract in new_contracts:
-      #  self.newOptionsContracts = False
-      #  self.updatedOptionsContracts = False
-
-        #if len(self.newcontracts) == 0:
-        #  self.newcontracts[contract.symbol] = Contract(contract)
-        #else:
-        #  if self.newcontracts.get(contract.symbol) is None:
-        #    self.newOptionsContracts = True
-        #    if chaos_monkey:         
-        #      if bool(random.getrandbits(1)):
-        #        self.newcontracts[contract.symbol] = Contract(contract)            
-        #    else:
-        #       self.newcontracts[contract.symbol] = Contract(contract)                    
-        #  else:
-        #    self.updatedOptionsContracts = True
-        #    self.updatedcontracts[contract.symbol] = Contract(contract)
-  
-      #self.allcontracts = {**self.allcontracts, **self.newcontracts}
-
-      
-      #First_Dict = self.allcontracts
-      #Second_Dict = self.newcontracts
-
-      #for key, values in First_Dict.items():
-      #    if key not in Second_Dict:  # if key match
-      #        print("key: {}, missing values: {} in Second_Dict - delete contact".format(key))
-      #        self.removeOptionsContracts(self, self.contractstoberemoved)
-
-      #for key, values in Second_Dict.items():
-      #    if key not in First_Dict:
-      #        print("key: {}, not in First_Dict - new contract".format(key))
-      #        self.addOptionsContracts(self, self.contractstoberemoved)
-
-
       # Chaos Monkey!
       for contract in new_contracts:
         if chaos_monkey:
@@ -103,20 +68,30 @@ class Contracts:
              new_contracts.pop(random.randint(0, len(new_contracts)-1))
           else:
             self.newcontracts[contract.symbol] = Contract(contract)
+        else:
+          self.newcontracts[contract.symbol] = Contract(contract)
     
       for key, value in self.allcontracts.items():
           if key not in self.newcontracts:  # if key not match
-              logging.info("key: {}, missing values: not in newcontracts - delete contact".format(key))
+              logging.debug("key: {}, missing values: not in newcontracts - delete contact".format(key))
               self.contractstoberemoved[value.symbol] = Contract(value)
 
       for key, value in self.newcontracts.items():
           if key not in self.allcontracts:
-              logging.info("key: {}, not in allcontracts - new contract".format(key))              
+              logging.debug("key: {}, not in allcontracts - new contract".format(key))              
               self.contractstobeadded[value.symbol] = Contract(value)
               
 
-
       self.allcontracts = {**self.allcontracts, **self.newcontracts}
+
+      logging.info("{} missing values: not in new contracts - delete contact".format(len(self.contractstoberemoved)))
+      logging.info("{} missing values: not in all contracts - add contact".format(len(self.contractstobeadded)))
+
+      logging.info("{} new contracts ".format(len(self.newcontracts)))
+      logging.info("{} all contracts ".format(len(self.allcontracts)))
+
+
+      
       self.newcontracts = {}
 
       if len(self.contractstoberemoved) > 0:
@@ -127,7 +102,6 @@ class Contracts:
          self.addOptionsContracts(key)
          # Handle
          self.contractstobeadded = {}
-
 
 
 class Trade:
@@ -282,7 +256,7 @@ class Broker:
       self.getOptionsContracts("call", underlying_symbols, nextFriday)    
       self.getOptionsContracts("put", underlying_symbols, nextFriday)
 
-      time.sleep(60)
+      time.sleep(30)
 
   # Retrieve all Contracts for the given underlying stocks ITM
   async def option_data_stream_handler(self, data):
