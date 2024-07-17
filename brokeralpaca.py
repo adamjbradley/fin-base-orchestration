@@ -1,13 +1,14 @@
 import logging
 
+from kafkaproducer import KafkaProducer
+from tradingstrategy import Strategy
+
 import datetime
 import threading
 
 import alpaca_trade_api as tradeapi
 import time
-#from alpaca_trade_api.rest import TimeFrame
-#import pandas as pd
-#from datetime import datetime, timedelta
+
 
 import alpaca
 from alpaca.data.live.option import *
@@ -28,8 +29,10 @@ import pytz
 
 import random
 
+
 # Stock WS streaming
 from alpaca_trade_api.stream import Stream
+from alpaca_trade_api.common import URL
 
 # Below are the variables for development this documents
 # Please do not change these variables
@@ -56,6 +59,7 @@ class Contract:
         self.strike_price = contract.strike_price        
         self.raw_contract = contract
         self.open_price = None
+        self.open_price_date = None
         self.close_price = contract.close_price
 
 class Contracts:
@@ -66,17 +70,20 @@ class Contracts:
 
       # Chaos Monkey!
       for contract in new_contracts:
+
+        self.addContracts(self, new_contracts)
+
         if chaos_monkey:
           if bool(random.getrandbits(1)):
-             new_contracts.pop(random.randint(0, len(new_contracts)-1))
-          else:
-            self.newcontracts[contract.symbol] = Contract(contract)
+            #if bool(random.getrandbits(1)):
+            #  if bool(random.getrandbits(1)):
+                self.newcontracts[contract.symbol] = Contract(contract)
         else:
-          self.newcontracts[contract.symbol] = Contract(contract)
+          self.newcontracts[contract.symbol] = Contract(contract)   
     
       for key, value in self.allcontracts.items():
           if key not in self.newcontracts:  # if key not match
-              logging.debug("key: {}, missing values: not in newcontracts - delete contact".format(key))
+              logging.debug("key: {}, missing values: not in newcontracts - delete contract".format(key))
               self.contractstoberemoved[value.symbol] = Contract(value)
 
       for key, value in self.newcontracts.items():
@@ -87,24 +94,46 @@ class Contracts:
 
       self.allcontracts = {**self.allcontracts, **self.newcontracts}
 
-      logging.info("{} missing values: not in new contracts - delete contact".format(len(self.contractstoberemoved)))
-      logging.info("{} missing values: not in all contracts - add contact".format(len(self.contractstobeadded)))
+      logging.info("Existing contract not found in new contracts - deleting {} contract(s)".format(len(self.contractstoberemoved)))
+      logging.info("New contract not found in contracts - adding {} contract(s)".format(len(self.contractstobeadded)))
 
-      logging.info("{} new contracts ".format(len(self.newcontracts)))
       logging.info("{} all contracts ".format(len(self.allcontracts)))
-
-
       
       self.newcontracts = {}
 
-      if len(self.contractstoberemoved) > 0:
-        self.removeOptionsContracts(key)
-        # Handle them
-        self.contractstoberemoved = {}
-      if len(self.contractstobeadded) > 0:
-         self.addOptionsContracts(key)
-         # Handle
-         self.contractstobeadded = {}
+    def addContractsFromDict(self, new_contracts):
+      
+      # Chaos Monkey!
+      for key, value in new_contracts.items():
+
+        #Contracts.addContracts(self, new_contracts)
+
+        if chaos_monkey:
+          if bool(random.getrandbits(1)):
+            #if bool(random.getrandbits(1)):
+            #  if bool(random.getrandbits(1)):
+                self.newcontracts[key] = Contract(value)  
+        else:
+           self.newcontracts[key] = Contract(value)        
+    
+      for key, value in self.allcontracts.items():
+          if key not in self.newcontracts:  # if key not match
+              logging.debug("key: {}, missing values: not in newcontracts - delete contract".format(key))
+              self.contractstoberemoved[value.symbol] = Contract(value)
+
+      for key, value in self.newcontracts.items():
+          if key not in self.allcontracts:
+              logging.debug("key: {}, not in allcontracts - new contract".format(key))              
+              self.contractstobeadded[value.symbol] = Contract(value)              
+
+      self.allcontracts = {**self.allcontracts, **self.newcontracts}
+
+      logging.info("Existing contract not found in new contracts - deleting {} contract(s)".format(len(self.contractstoberemoved)))
+      logging.info("New contract not found in contracts - adding {} contract(s)".format(len(self.contractstobeadded)))
+
+      logging.info("{} all contracts ".format(len(self.allcontracts)))
+      
+      self.newcontracts = {}
 
 
 class Trade:
@@ -119,10 +148,13 @@ class Trades:
         self.trades = []
 
 class Broker:
-  def __init__(self, api_key, secret_key, paper):
+  def __init__(self, api_key, secret_key, paper, producer, log):
     #self.alpaca = tradeapi.REST(api_key, secret_key, "https://paper-api.alpaca.markets", 'v2')
 
     logging.basicConfig(format='%(asctime)s  %(levelname)s %(message)s', level=logging.INFO)
+
+    #
+    self.producer = producer
 
     self.timeToClose = None
     self.api_key = api_key
@@ -143,46 +175,23 @@ class Broker:
     self.MarketJustOpened = False
     self.MarketJustClosed = False
 
-    self.SampleContract = None
+    self.SampleContract = "SPY240716P00515000"
 
     self.updatedOptionsContracts = False
     self.newOptionsContracts = False
     self.removedOptionsContracts = False
 
-    self.isConnected = False
+    self.isOptionsConnected = False
+    self.isStockConnected = False
 
-    global options_conn
-    options_conn = OptionDataStream(self.api_key, self.secret_key, url_override = option_stream_data_wss)
-
+    self.options_conn = OptionDataStream(self.api_key, self.secret_key, url_override = option_stream_data_wss)
     
-
-  def run(self):
-
-    # Wait for market to open.
-    print("Waiting for market to open...")
-    tAMO = threading.Thread(target=self.awaitMarketOpen)
-    tAMO.start()
-    tAMO.join()
-    print("Market opened.")
-
-    while True:
-
-      # Figure out when the market will close so we can prepare to sell beforehand.
-      clock = self.alpaca.get_clock()
-      closingTime = clock.next_close.replace(tzinfo=ZoneInfo.fromutc).timestamp()
-      currTime = clock.timestamp.replace(tzinfo=datetime.timezone.utc).timestamp()
-      self.timeToClose = closingTime - currTime
-
-      if(self.timeToClose < (60 * 15)):
-        # Close all positions when 15 minutes til market close.
-        print("Market closing soon.  Closing positions.")
-
-        # Run script again after market close for next trading day.
-        print("Sleeping until market close (15 minutes).")
-        time.sleep(60 * 15)
-      else:
-        time.sleep(5)
-
+    feed = 'iex'  # <- replace to SIP if you have PRO subscription
+    self.stocks_conn = Stream(self.api_key,
+                  self.secret_key,
+                  base_url=URL('https://paper-api.alpaca.markets'),
+                  data_feed=feed)
+    
   # Wait for market to open.
   def awaitMarketOpen(self):
     self.isMarketOpen = self.trade_client.get_clock().is_open
@@ -191,7 +200,7 @@ class Broker:
       openingTime = clock.next_open.replace(tzinfo=pytz.UTC).timestamp()
       currTime = clock.timestamp.replace(tzinfo=pytz.UTC).timestamp()
       timeToOpen = int((openingTime - currTime) / 60)
-      print(str(timeToOpen) + " minutes til market open.")
+      log.info(str(timeToOpen) + " minutes til market open.")
       time.sleep(60)
       self.isMarketOpen = self.trade_client.get_clock().is_open
 
@@ -209,6 +218,9 @@ class Broker:
 
     logging.info("getOptionsContracts: entering")
 
+    #Want to aggregate them here
+    newcontracts = {}
+
     req = GetOptionContractsRequest(
         underlying_symbols = underlying_symbols,                     # specify underlying symbols
         status = AssetStatus.ACTIVE,                                 # specify asset status: active (default)
@@ -225,7 +237,11 @@ class Broker:
         page_token = None,                                           # specify page
     )
     res = self.trade_client.get_option_contracts(req)
-    Contracts.addContractsFromList(self, new_contracts=res.option_contracts)
+    
+    for contract in res.option_contracts:
+      newcontracts[contract.symbol] = contract
+
+    #Contracts.addContractsFromList(self, new_contracts=res.option_contracts)
 
     # continue to fetch option contracts if there is next_page_token in response
     if res.next_page_token is not None:
@@ -244,9 +260,14 @@ class Broker:
             page_token = res.next_page_token,                      # specify page token
         )        
         res = self.trade_client.get_option_contracts(req)
-        Contracts.addContractsFromList(self, new_contracts=res.option_contracts)
+
+        for contract in res.option_contracts:
+          newcontracts[contract.symbol] = contract
+
+        #Contracts.addContractsFromList(self, new_contracts=res.option_contracts)
 
     logging.info("getOptionsContracts: leaving")
+    return newcontracts
 
   def getNewOptionsContracts(self):
 
@@ -258,45 +279,77 @@ class Broker:
 
       # Your background task code here
       thisFriday = self.thisFriday()
-      self.getOptionsContracts("call", underlying_symbols, thisFriday)    
-      self.getOptionsContracts("put", underlying_symbols, thisFriday)
+      call_option_contracts = self.getOptionsContracts("call", underlying_symbols, thisFriday)    
+      put_option_contracts = self.getOptionsContracts("put", underlying_symbols, thisFriday)
+      all_option_contracts = {**call_option_contracts, **put_option_contracts}
+
+      # List of revised contracts
+      Contracts.addContractsFromDict(self, new_contracts=all_option_contracts)
+
+      # Provide Data to satisfy various strategies - only give them what they need
+
+      # Strategy #1 - Top 10 contracts based on % gain from open
+      if len(self.contractstoberemoved) > 0:
+        self.removeOptionsContracts(self.contractstoberemoved)
+        # Handle them
+        self.contractstoberemoved = {}
+      if len(self.contractstobeadded) > 0:
+         self.addOptionsContracts(self.contractstobeadded)
+         # Handle
+         self.contractstobeadded = {}
 
       time.sleep(30)
 
-  # Retrieve all Contracts for the given underlying stocks ITM
-  async def option_data_stream_handler(self, data):
-      #publish(data)
-      print('options stream update', data)
+#region Options handling
+
+  # Retrieve all Options contracts for the given underlying stocks ITM
+  async def option_quotes_data_stream_handler(self, data):
+      self.producer.publish(data)
+      logging.info('Options stream quotes update', data)
+
+  async def option_trades_data_stream_handler(self, data):
+      self.producer.publish(data)
+      logging.info('Options stream trades update', data)
 
   def start_option_data_stream(self):
-            
+
+      symbols = [
+          self.SampleContract
+      ]
+                 
       try:
-        self.isConnected = True
-        options_conn.run()
+        logging.info("Starting WSS for options")
+        
+        self.options_conn.subscribe_quotes(self.option_quotes_data_stream_handler, *symbols)
+        self.options_conn.subscribe_trades(self.option_trades_data_stream_handler, *symbols)
+        self.options_conn.run()
+
+        self.isOptionsConnected = True
 
       except Exception as e:
-        self.isConnected = False
-        print("You got an exception: {} during execution. continue "
+        self.isOptionsConnected = False
+        logging.info("You got an exception: {} during execution. continue "
             "execution.".format(e))
         # let the execution continue
         pass
 
-  def stop_option_data_stream(self):     
-      if (options_conn._running):
-        options_conn.stop()
+  def stop_option_data_stream(self):
+      if (self.options_conn._running):
+        logging.info("Stopping WSS for options")
+        self.options_conn.stop()
 
   def removeOptionsContracts(self, contracts):
       
       symbols = [
-          contracts
+          self.SampleContract
       ]
 
       try:
-        if (options_conn._running):
-          options_conn.unsubscribe_quotes(*symbols)
-          options_conn.unsubscribe_trades(*symbols)
+        if (self.options_conn._running):
+          self.options_conn.unsubscribe_quotes(*symbols)
+          self.options_conn.unsubscribe_trades(*symbols)
       except Exception as e:
-          print("You got an exception: {} during execution. continue "
+          logging.info("You got an exception: {} during execution. continue "
               "execution.".format(e))
           # let the execution continue
           pass
@@ -304,19 +357,88 @@ class Broker:
   def addOptionsContracts(self, contracts):
       
       symbols = [
-          contracts
+          self.SampleContract
       ]
 
       try:
-        if (options_conn._running):
-          options_conn.subscribe_quotes(self.option_data_stream_handler, *symbols)
-          options_conn.subscribe_trades(self.option_data_stream_handler, *symbols)        
+        if (self.options_conn._running):
+          self.options_conn.subscribe_quotes(self.option_quotes_data_stream_handler, *symbols)
+          self.options_conn.subscribe_trades(self.option_trades_data_stream_handler, *symbols)        
       except Exception as e:
-                print("You got an exception: {} during execution. continue "
-                    "execution.".format(e))
-                # let the execution continue
-                pass
+            logging.info("You got an exception: {} during execution. continue "
+                "execution.".format(e))
+            # let the execution continue
+            pass
 
+#endregion
+
+#region Stock Handling
+
+# Retrieve all Stock updates
+  async def stock_data_stream_handler(self, data):
+      self.producer.publish(data)
+      logging.info("Starting WSS for stocks")
+      logging.info('Stocks stream update', data)
+
+  def start_stock_data_stream(self):
+            
+      try:
+        logging.info("Starting WSS for stocks")
+        self.stocks_conn.subscribe_quotes(self.stock_data_stream_handler, 'AAPL')
+        self.stocks_conn.run()
+
+        self.isStockConnected = True
+
+      except Exception as e:
+        self.isStockConnected = False #TODO Should be an enum
+        logging.info("You got an exception: {} during execution. continue "
+            "execution.".format(e))
+        # let the execution continue
+        pass
+
+  def stop_stock_data_stream(self):    
+      try:
+        log.info("Stopping WSS for stocks")
+        if (self.stocks_conn._running):    
+          self.stocks_conn.stop()
+        isStockConnected = False
+      except Exception as e:        
+        logging.info("You got an exception: {} during execution. continue "
+            "execution.".format(e))
+        # let the execution continue
+        pass
+
+  def removeStocks(self, stocks):
+      
+      symbols = [
+          stocks
+      ]
+
+      try:
+        if (self.stocks_conn._running):
+          self.stocks_conn.unsubscribe_quotes(*symbols)
+      except Exception as e:
+          logging.info("You got an exception: {} during execution. continue "
+              "execution.".format(e))
+          # let the execution continue
+          pass
+
+  def addStocks(self, stocks):
+      
+      symbols = [
+          stocks
+      ]
+
+      try:
+        if (self.stocks_conn._running):
+          self.stocks_conn.subscribe_quotes(self.stock_data_stream_handler, symbols)
+      except Exception as e:
+            logging.info("You got an exception: {} during execution. continue "
+                "execution.".format(e))
+            # let the execution continue
+            pass
+
+#endregion
 
 
 # Run the LongShort class

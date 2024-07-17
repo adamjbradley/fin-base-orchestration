@@ -1,7 +1,5 @@
 import logging
 
-from brokeralpaca import Broker
-
 from datetime import datetime, timedelta
 
 class Strategy:
@@ -13,9 +11,8 @@ class Strategy:
         self.timeToClose = None
 
     # If current price is greater than open
-    def SimpleStrategy(self, contracts):        
+    def SimpleStrategy(self, contracts):
         pass
-
 
 #strategy = Strategy()
 #strategy.SimpleStrategy(None)

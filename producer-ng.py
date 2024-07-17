@@ -15,10 +15,8 @@ from zoneinfo import ZoneInfo
 
 from brokeralpaca import Broker
 from kafkaproducer import KafkaProducer
+from kafkaconsumerthreaded import KafkaConsumer
 from tradingstrategy import Strategy
-
-#Switch to multiprocessing
-import multiprocessing as mp
 
 # Please change the following to your own PAPER api key and secret
 # You can get them from https://alpaca.markets/
@@ -40,26 +38,33 @@ option_stream_data_wss = None
 
 #
 instrument = "SPY"
-sample_contract = "SPY240716P00515000"
+#sample_contract = "SPY240716P00515000"
 category = "stocks"                             #stocks/options/crypto
 isMarketOpen = False
 
-if __name__ == '__main__':
-    logging.basicConfig(format='%(asctime)s  %(levelname)s %(message)s', level=logging.INFO)
 
-    # Initialise Broker
-    broker = Broker(api_key, secret_key, paper)
+if __name__ == '__main__':
+    log = logging.basicConfig(format='%(asctime)s  %(levelname)s %(message)s', level=logging.INFO)
+
+    # Initialise Control Channel
+    consumer = KafkaConsumer("quickstart-events", "1")
+    control_channel = threading.Thread(target=consumer.start)
+    control_channel.daemon = True
+    control_channel.start()
 
     # Initialise Producer
-    producer = KafkaProducer()
+    producer = KafkaProducer("quickstart-events")
+    producer.start("Data Feed: Simple Options Strategy started")
+
+    # Initialise Broker
+    broker = Broker(api_key, secret_key, paper, producer, log)
         
     # Get Active Contracts
     underlying_symbols = [instrument]
 
     # Simple Strategy
-    strategy = Strategy()
+    #strategy = Strategy()
     #contracts_to_watch = strategy.SimpleStrategy(broker.activecontracts)
-
 
     # Monitor for market open
     print("Waiting for market to open...")
@@ -72,10 +77,19 @@ if __name__ == '__main__':
     options_contracts_thread.daemon = True
     options_contracts_thread.start()
 
-    
-    pool = ThreadPoolExecutor(1)
 
-    while 1:
+    # WSS Options
+    options_data_thread = threading.Thread(target=broker.start_option_data_stream)
+    options_data_thread.daemon = True
+    options_data_thread.start()
+
+
+    # WSS Stocks
+    stock_data_thread = threading.Thread(target=broker.start_stock_data_stream)
+    stock_data_thread.daemon = True
+    stock_data_thread.start()
+
+    while True:
 
         if broker.newOptionsContracts:
             logging.info(f"Found {len(broker.allcontracts)} total contracts for {underlying_symbols}")
@@ -93,11 +107,10 @@ if __name__ == '__main__':
             broker.removeOptionsContracts(broker.contractstoberemoved)
             broker.removedOptionsContracts = False
 
+        broker.isMarketOpen = True
+
         if (broker.isMarketOpen):
             try:
-                pool.submit(broker.start_option_data_stream())
-                time.sleep(2)
-                broker.stop_option_data_stream()
                 time.sleep(20)
             except KeyboardInterrupt:
                 print("Interrupted execution by user")
