@@ -1,6 +1,8 @@
 import logging
 
 from kafkaproducer import KafkaProducer
+from kafkaconsumerthreaded import KafkaConsumer
+
 from tradingstrategy import Strategy
 
 import datetime
@@ -8,7 +10,6 @@ import threading
 
 import alpaca_trade_api as tradeapi
 import time
-
 
 import alpaca
 from alpaca.data.live.option import *
@@ -29,10 +30,12 @@ import pytz
 
 import random
 
-
 # Stock WS streaming
 from alpaca_trade_api.stream import Stream
 from alpaca_trade_api.common import URL
+
+from enum import Enum
+
 
 # Below are the variables for development this documents
 # Please do not change these variables
@@ -41,13 +44,42 @@ trade_api_url = None
 trade_api_wss = None
 data_api_url = None
 option_stream_data_wss = None
-chaos_monkey = False
+
 
 # Please change the following to your own PAPER api key and secret
 # You can get them from https://alpaca.markets/
 
 # Alpaca WebSocket Client
 # From https://github.com/alpacahq/alpaca-py/blob/master/examples/options-trading-basic.ipynb
+
+
+class ChaosMonkey:
+    def __init__(self):        
+        self.Enabled = False
+        self.OpeningTime = False
+        self.StockPicker = True
+
+    def coinflip(self):
+        if self.Enabled == True:
+          return bool(random.getrandbits(1))
+
+    def lesslikely(self):
+        if self.Enabled == True:
+          if int(str(datetime.now().second)) < 5:
+            return True
+
+#
+# Market State Classes
+#
+class MarketState(Enum):
+    Open = 1
+    AboutToOpen = 2
+    JustOpened = 3
+    AboutToClose = 4
+    Closed = 5
+    JustClosed = 6
+    ClosedForWeekend = 7
+    ClosedForHoliday = 8
 
 #
 # Contract/Trade Classes
@@ -106,13 +138,8 @@ class Contracts:
       # Chaos Monkey!
       for key, value in new_contracts.items():
 
-        #Contracts.addContracts(self, new_contracts)
-
-        if chaos_monkey:
-          if bool(random.getrandbits(1)):
-            #if bool(random.getrandbits(1)):
-            #  if bool(random.getrandbits(1)):
-                self.newcontracts[key] = Contract(value)  
+        if self.chaos_monkey.lesslikely():
+            self.newcontracts[key] = Contract(value)  
         else:
            self.newcontracts[key] = Contract(value)        
     
@@ -133,8 +160,7 @@ class Contracts:
 
       logging.info("{} all contracts ".format(len(self.allcontracts)))
       
-      self.newcontracts = {}
-
+      #self.newcontracts = {}
 
 class Trade:
     def __init__(self, name, time):        
@@ -148,33 +174,37 @@ class Trades:
         self.trades = []
 
 class Broker:
-  def __init__(self, api_key, secret_key, paper, producer, log):
-    #self.alpaca = tradeapi.REST(api_key, secret_key, "https://paper-api.alpaca.markets", 'v2')
+  def __init__(self, api_key, secret_key, paper, producer, consumer, log):
 
-    logging.basicConfig(format='%(asctime)s  %(levelname)s %(message)s', level=logging.INFO)
+    # Logging and debugging
+    self.log = log
+    self.chaos_monkey = ChaosMonkey()
 
-    #
+    # Broker
     self.producer = producer
+    self.consumer = consumer
 
-    self.timeToClose = None
+    # Connection
     self.api_key = api_key
     self.secret_key = secret_key
 
     # Setup client
     self.trade_client = TradingClient(api_key=api_key, secret_key=secret_key, paper=paper, url_override=trade_api_url)
 
+    # We're monitoring these...
+    self.underlyingsymbols = ["AAPL","TSLA","MSFT","NVDA","SPY", "NVDA"]
+
     # Initialize contracts handling
     self.allcontracts = {}
-    self.activecontracts = {}
     self.newcontracts = {}
-    self.updatedcontracts = {}
     self.contractstoberemoved = {}
     self.contractstobeadded = {}
 
+    # Market state
+    self.lastMarketState = MarketState.Closed
     self.isMarketOpen = False
-    self.MarketJustOpened = False
-    self.MarketJustClosed = False
 
+    # For testing
     self.SampleContract = "SPY240716P00515000"
 
     self.updatedOptionsContracts = False
@@ -183,7 +213,7 @@ class Broker:
 
     self.isOptionsConnected = False
     self.isStockConnected = False
-
+   
     self.options_conn = OptionDataStream(self.api_key, self.secret_key, url_override = option_stream_data_wss)
     
     feed = 'iex'  # <- replace to SIP if you have PRO subscription
@@ -194,15 +224,50 @@ class Broker:
     
   # Wait for market to open.
   def awaitMarketOpen(self):
-    self.isMarketOpen = self.trade_client.get_clock().is_open
-    while(not self.isMarketOpen):
-      clock = self.trade_client.get_clock()
-      openingTime = clock.next_open.replace(tzinfo=pytz.UTC).timestamp()
-      currTime = clock.timestamp.replace(tzinfo=pytz.UTC).timestamp()
-      timeToOpen = int((openingTime - currTime) / 60)
-      log.info(str(timeToOpen) + " minutes til market open.")
-      time.sleep(60)
+    while True:
+
       self.isMarketOpen = self.trade_client.get_clock().is_open
+      
+      # Having his fun!
+      if self.chaos_monkey.coinflip():
+        self.isMarketOpen = True
+        self.marketState = MarketState.JustOpened
+    
+      while(not self.isMarketOpen):
+        clock = self.trade_client.get_clock()
+        openingTime = clock.next_open.replace(tzinfo=pytz.UTC).timestamp()
+        currTime = clock.timestamp.replace(tzinfo=pytz.UTC).timestamp()
+        timeToOpen = int((openingTime - currTime) / 60)           
+        log.info(str(timeToOpen) + " minutes til market open.")
+
+        if (timeToOpen <= 1):
+           time.sleep(1)
+        else:
+           time.sleep(60)
+        
+        self.isMarketOpen = self.trade_client.get_clock().is_open
+
+        # Having his fun!
+        if self.chaos_monkey.coinflip():
+          self.isMarketOpen = True
+          self.lastMarketState = MarketState.Closed
+
+      # Market is open, handle market state transitions
+      if not self.isMarketOpen:
+        if self.lastMarketState == MarketState.Open:
+          self.lastMarketState = MarketState.JustClosed
+          self.marketState = MarketState.Closed
+        elif self.lastMarketState == MarketState.JustClosed:
+          self.lastMarketState = MarketState.Closed
+
+      if self.isMarketOpen:
+        if self.lastMarketState == MarketState.Closed:
+          self.lastMarketState = MarketState.JustOpened
+          self.marketState = MarketState.Open
+        elif self.lastMarketState == MarketState.JustOpened:
+          self.lastMarketState = MarketState.Open
+
+      time.sleep(60)
 
   def thisFriday(self):
       today = datetime.today() 
@@ -210,7 +275,7 @@ class Broker:
       return next_friday
   
   # getOptionsContracts returns contracts, we want to look at each of them by interrogating contract.symbol. Sample contact SPY240716P00515000
-  def getOptionsContracts(self, type, underlying_symbols, expiry_date):
+  def getOptionsContracts(self, type, underlying_symbols, expiry_date, strike_price_lte, strike_price_gte, limit):
     # specify expiration date range
     now = datetime.now(tz = ZoneInfo("America/New_York"))
     day1 = now + timedelta(days = 0)
@@ -231,9 +296,9 @@ class Broker:
         root_symbol = None,                                          # specify root symbol
         type = type,                                                 # specify option type: put
         style = ExerciseStyle.AMERICAN,                              # specify option style: american
-        strike_price_gte = None,                                     # specify strike price range
-        strike_price_lte = None,                                     # specify strike price range
-        limit = 1000,                                                # specify limit
+        strike_price_gte = strike_price_gte,                                     # specify strike price range
+        strike_price_lte = strike_price_lte,                                     # specify strike price range
+        limit = limit,                                                 # specify limit
         page_token = None,                                           # specify page
     )
     res = self.trade_client.get_option_contracts(req)
@@ -252,10 +317,10 @@ class Broker:
             expiration_date_gte = None,                            # we can pass date object
             expiration_date_lte = None,                            # or string (YYYY-MM-DD)
             root_symbol = None,                                    # specify root symbol
-            type = None,                                           # specify option type (ContractType.CALL or ContractType.PUT)
+            type = type,                                           # specify option type (ContractType.CALL or ContractType.PUT)
             style = None,                                          # specify option style (ContractStyle.AMERICAN or ContractStyle.EUROPEAN)
-            strike_price_gte = None,                               # specify strike price range
-            strike_price_lte = None,                               # specify strike price range
+            strike_price_gte = strike_price_gte,                               # specify strike price range
+            strike_price_lte = strike_price_lte,                               # specify strike price range
             limit = 1000,                                             # specify limit
             page_token = res.next_page_token,                      # specify page token
         )        
@@ -271,32 +336,36 @@ class Broker:
 
   def getNewOptionsContracts(self):
 
-    self.instrument = ["SPY"]
-
     while True:
-      # Get Active Contracts
-      underlying_symbols = self.instrument
+      if self.isMarketOpen:
 
-      # Your background task code here
-      thisFriday = self.thisFriday()
-      call_option_contracts = self.getOptionsContracts("call", underlying_symbols, thisFriday)    
-      put_option_contracts = self.getOptionsContracts("put", underlying_symbols, thisFriday)
-      all_option_contracts = {**call_option_contracts, **put_option_contracts}
+        #TODO Implement strategy here
+        # Expire this week
+        thisFriday = self.thisFriday()
 
-      # List of revised contracts
-      Contracts.addContractsFromDict(self, new_contracts=all_option_contracts)
+        # Affordable!
+        call_option_contracts = self.getOptionsContracts("call", self.underlying_symbols, thisFriday, "100", "0", 5)    
+        put_option_contracts = self.getOptionsContracts("put", self.underlying_symbols, thisFriday, "100", "0", 5)
+        all_option_contracts = {**call_option_contracts, **put_option_contracts}
 
-      # Provide Data to satisfy various strategies - only give them what they need
+        # List of revised contracts
+        Contracts.addContractsFromDict(self, new_contracts=all_option_contracts)
 
-      # Strategy #1 - Top 10 contracts based on % gain from open
-      if len(self.contractstoberemoved) > 0:
-        self.removeOptionsContracts(self.contractstoberemoved)
-        # Handle them
-        self.contractstoberemoved = {}
-      if len(self.contractstobeadded) > 0:
-         self.addOptionsContracts(self.contractstobeadded)
-         # Handle
-         self.contractstobeadded = {}
+        # Provide Data to satisfy various strategies - only give them what they need
+        if self.marketState == MarketState.JustOpened:
+          for key, value in all_option_contracts.items():
+            self.allcontracts[key].open_price = all_option_contracts[key].close_price
+            self.allcontracts[key].open_price_time = datetime.now
+                    
+        # Strategy #1 - Top 10 contracts based on % gain from open      
+        if len(self.contractstoberemoved) > 0:
+          if self.removeOptionsContracts(self.contractstoberemoved):
+            # Handle them
+            self.contractstoberemoved = {}
+        if len(self.contractstobeadded) > 0:
+          if self.addOptionsContracts(self.contractstobeadded):
+            # Handle
+            self.contractstobeadded = {}
 
       time.sleep(30)
 
@@ -313,15 +382,11 @@ class Broker:
 
   def start_option_data_stream(self):
 
-      symbols = [
-          self.SampleContract
-      ]
-                 
+      if not self.isMarketOpen:
+        return
+       
       try:
-        logging.info("Starting WSS for options")
-        
-        self.options_conn.subscribe_quotes(self.option_quotes_data_stream_handler, *symbols)
-        self.options_conn.subscribe_trades(self.option_trades_data_stream_handler, *symbols)
+        logging.info("Starting WSS for options")        
         self.options_conn.run()
 
         self.isOptionsConnected = True
@@ -334,30 +399,50 @@ class Broker:
         pass
 
   def stop_option_data_stream(self):
-      if (self.options_conn._running):
-        logging.info("Stopping WSS for options")
-        self.options_conn.stop()
+      if not self.isMarketOpen:
+        return False
+
+      try:
+        if (self.options_conn._running):
+          logging.info("Stopping WSS for options")
+          self.options_conn.stop()
+      except Exception as e:
+          logging.info("You got an exception: {} during execution. continue "
+              "execution.".format(e))
+          # let the execution continue
+          pass
+      
+      return False
 
   def removeOptionsContracts(self, contracts):
-      
+
+      if not self.isMarketOpen:
+        return False
+
       symbols = [
-          self.SampleContract
+          contracts
       ]
 
       try:
         if (self.options_conn._running):
           self.options_conn.unsubscribe_quotes(*symbols)
           self.options_conn.unsubscribe_trades(*symbols)
+          return True
       except Exception as e:
           logging.info("You got an exception: {} during execution. continue "
               "execution.".format(e))
-          # let the execution continue
+          # let the execution continue          
           pass
+      
+      return False
 
   def addOptionsContracts(self, contracts):
+
+      if not self.isMarketOpen:
+        return False
       
       symbols = [
-          self.SampleContract
+          contracts
       ]
 
       try:
@@ -367,8 +452,10 @@ class Broker:
       except Exception as e:
             logging.info("You got an exception: {} during execution. continue "
                 "execution.".format(e))
-            # let the execution continue
+            # let the execution continue      
             pass
+      
+      return False
 
 #endregion
 
@@ -381,7 +468,10 @@ class Broker:
       logging.info('Stocks stream update', data)
 
   def start_stock_data_stream(self):
-            
+
+      if not self.isMarketOpen:
+        return
+
       try:
         logging.info("Starting WSS for stocks")
         self.stocks_conn.subscribe_quotes(self.stock_data_stream_handler, 'AAPL')
@@ -397,6 +487,10 @@ class Broker:
         pass
 
   def stop_stock_data_stream(self):    
+
+      if not self.isMarketOpen:
+        return
+
       try:
         log.info("Stopping WSS for stocks")
         if (self.stocks_conn._running):    
@@ -409,7 +503,10 @@ class Broker:
         pass
 
   def removeStocks(self, stocks):
-      
+
+      if not self.isMarketOpen:
+        return
+
       symbols = [
           stocks
       ]
@@ -424,7 +521,10 @@ class Broker:
           pass
 
   def addStocks(self, stocks):
-      
+
+      if not self.isMarketOpen:
+        return
+
       symbols = [
           stocks
       ]
@@ -439,9 +539,3 @@ class Broker:
             pass
 
 #endregion
-
-
-# Run the LongShort class
-#ls = Broker()
-#print(ls.nextFriday())
-#ls.run()

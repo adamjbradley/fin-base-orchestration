@@ -18,6 +18,8 @@ from kafkaproducer import KafkaProducer
 from kafkaconsumerthreaded import KafkaConsumer
 from tradingstrategy import Strategy
 
+import random
+
 # Please change the following to your own PAPER api key and secret
 # You can get them from https://alpaca.markets/
 
@@ -38,26 +40,23 @@ option_stream_data_wss = None
 
 #
 instrument = "SPY"
-#sample_contract = "SPY240716P00515000"
 category = "stocks"                             #stocks/options/crypto
-isMarketOpen = False
-
 
 if __name__ == '__main__':
     log = logging.basicConfig(format='%(asctime)s  %(levelname)s %(message)s', level=logging.INFO)
 
     # Initialise Control Channel
-    consumer = KafkaConsumer("quickstart-events", "1")
-    control_channel = threading.Thread(target=consumer.start)
-    control_channel.daemon = True
-    control_channel.start()
+    control_channel = KafkaConsumer("control-topic", "2", "producer-ng")
+    control_channel_thread = threading.Thread(target=control_channel.start)
+    control_channel_thread.daemon = True
+    control_channel_thread.start()
 
     # Initialise Producer
     producer = KafkaProducer("quickstart-events")
     producer.start("Data Feed: Simple Options Strategy started")
 
     # Initialise Broker
-    broker = Broker(api_key, secret_key, paper, producer, log)
+    broker = Broker(api_key, secret_key, paper, producer, control_channel, log)
         
     # Get Active Contracts
     underlying_symbols = [instrument]
@@ -77,28 +76,29 @@ if __name__ == '__main__':
     options_contracts_thread.daemon = True
     options_contracts_thread.start()
 
-
     # WSS Options
     options_data_thread = threading.Thread(target=broker.start_option_data_stream)
-    options_data_thread.daemon = True
+    options_data_thread.daemon = True    
     options_data_thread.start()
-
 
     # WSS Stocks
     stock_data_thread = threading.Thread(target=broker.start_stock_data_stream)
     stock_data_thread.daemon = True
     stock_data_thread.start()
 
+
     while True:
 
         if broker.newOptionsContracts:
             logging.info(f"Found {len(broker.allcontracts)} total contracts for {underlying_symbols}")
             # Handle these
+            broker.addOptionsContracts(broker.contractstobeadded)
             broker.newOptionsContracts = False
 
         if broker.updatedOptionsContracts:
             logging.info(f"Found {len(broker.updatedcontracts)} updated contracts for {underlying_symbols}")
             # Handle these
+            updatedOptionsContracts = broker.updatedOptionsContracts
             broker.updatedOptionsContracts = False
 
         if broker.removedOptionsContracts:
@@ -106,12 +106,20 @@ if __name__ == '__main__':
             # Handle these
             broker.removeOptionsContracts(broker.contractstoberemoved)
             broker.removedOptionsContracts = False
+      
+        logging.info("Processing all messages: " + str(len(control_channel.messages)))   
+        while len(control_channel.messages) > 0:
+            message = control_channel.messages[0]
+            logging.info("Processing: " + message)                
 
-        broker.isMarketOpen = True
+            del control_channel.messages[0]
+            logging.info("Messages remaining: " + str(len(control_channel.messages)))
+
+
 
         if (broker.isMarketOpen):
-            try:
-                time.sleep(20)
+            try:                
+                pass
             except KeyboardInterrupt:
                 print("Interrupted execution by user")
                 broker.stop_option_data_stream()
@@ -121,7 +129,6 @@ if __name__ == '__main__':
                     "execution.".format(e))
                 # let the execution continue
                 pass
-        else:
-            broker.stop_option_data_stream()
-        
+                
         time.sleep(1)
+        

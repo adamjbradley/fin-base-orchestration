@@ -25,8 +25,6 @@ class KafkaProducer:
         if err is not None:
             print('Message delivery failed: {}'.format(err))
             self.publish(err)
-        else:
-            print('Message delivered to {} [{}]'.format(msg.topic(), msg.partition()))
 
     def publish(self, data):
         producer.poll(0)

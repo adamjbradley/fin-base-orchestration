@@ -1,3 +1,4 @@
+#From https://github.com/confluentinc/confluent-kafka-python
 import logging
 
 from confluent_kafka import Consumer
@@ -8,7 +9,7 @@ c = Consumer({
     'auto.offset.reset': 'earliest'
 })
 
-c.subscribe(['quickstart-events'])
+c.subscribe(['control-topic'])
 
 while True:
     msg = c.poll(1.0)
