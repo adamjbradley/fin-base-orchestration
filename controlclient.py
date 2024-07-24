@@ -56,7 +56,7 @@ if __name__ == '__main__':
     controller = KafkaProducer("control-topic")
     controller.start("Controller started")
 
-    all_symbols = ['AAPL','TSLA','MSFT','NVDA','SPY', 'NVDA', 'AMD']
+    all_symbols = ['META', 'AAPL', 'SPY', 'QQQ', 'TSLA','NVDA', 'MSFT', 'AMD']
 
     heartbeat_command = build_control_command("controlclient", "heartbeat", None)
     get_underlyings_command = build_control_command("controlclient", "getuderlyings", all_symbols)
@@ -81,7 +81,7 @@ if __name__ == '__main__':
         logging.info("Sending unsubscribe underlying request to control topic: " + unsubscribe_underlyings)
         controller.publish(unsubscribe_underlyings)
 
-        time.sleep(15)
+        time.sleep(30)
         random_underlying_index = random.randint(0, len(all_symbols)-1)
         logging.info("Sending subscribe underlying request to control topic: " + all_symbols[random_underlying_index] )
         #subscribe_underlying = "{'action':'subscribe.underlying','underlying':['" + underlying_symbols[random_underlying_index] + "']}"

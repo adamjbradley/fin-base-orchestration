@@ -106,14 +106,26 @@ if __name__ == '__main__':
             # Handle these
             broker.removeOptionsContracts(broker.contractstoberemoved)
             broker.removedOptionsContracts = False
-      
-        logging.info("Processing all messages: " + str(len(control_channel.messages)))   
+
+        # Process control messages              
         while len(control_channel.messages) > 0:
             message = control_channel.messages[0]
             logging.info("Processing: " + message)                
 
+            try:
+                jsonmessage = json.loads(message)
+                logging.info("Messages remaining: " + str(len(control_channel.messages)))
+            
+                if jsonmessage["action"] == "subscribe.underlying":
+                    broker.underlyingsymbols[jsonmessage["parameters"]] = jsonmessage
+
+                if jsonmessage["action"] == "unsubscribe.underlying":
+                    del broker.underlyingsymbols[jsonmessage["parameters"]]
+
+            except Exception as e:
+                pass
+
             del control_channel.messages[0]
-            logging.info("Messages remaining: " + str(len(control_channel.messages)))
 
 
 

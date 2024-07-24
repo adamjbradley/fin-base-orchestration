@@ -160,7 +160,7 @@ class Contracts:
 
       logging.info("{} all contracts ".format(len(self.allcontracts)))
       
-      #self.newcontracts = {}
+      self.newcontracts = {}
 
 class Trade:
     def __init__(self, name, time):        
@@ -168,6 +168,7 @@ class Trade:
         self.symbol = name
         self.buy_price = 0.0
         self.sl = 0.0
+        self.position_size = 0.0
 
 class Trades:
     def __init__(self):
@@ -192,7 +193,8 @@ class Broker:
     self.trade_client = TradingClient(api_key=api_key, secret_key=secret_key, paper=paper, url_override=trade_api_url)
 
     # We're monitoring these...
-    self.underlyingsymbols = ["AAPL","TSLA","MSFT","NVDA","SPY", "NVDA"]
+    #self.underlyingsymbols_orig = ["AAPL","TSLA","MSFT","NVDA","SPY", "NVDA"]
+    self.underlyingsymbols = {}
 
     # Initialize contracts handling
     self.allcontracts = {}
@@ -337,35 +339,33 @@ class Broker:
   def getNewOptionsContracts(self):
 
     while True:
-      if self.isMarketOpen:
+       #TODO Implement strategy here
+      # Expire this week
+      thisFriday = self.thisFriday()
 
-        #TODO Implement strategy here
-        # Expire this week
-        thisFriday = self.thisFriday()
+      # Affordable!
+      call_option_contracts = self.getOptionsContracts("call", list(self.underlyingsymbols.keys()), thisFriday, "100", "0", 10)    
+      put_option_contracts = self.getOptionsContracts("put", list(self.underlyingsymbols.keys()), thisFriday, "100", "0", 10)
+      all_option_contracts = {**call_option_contracts, **put_option_contracts}
 
-        # Affordable!
-        call_option_contracts = self.getOptionsContracts("call", self.underlying_symbols, thisFriday, "100", "0", 5)    
-        put_option_contracts = self.getOptionsContracts("put", self.underlying_symbols, thisFriday, "100", "0", 5)
-        all_option_contracts = {**call_option_contracts, **put_option_contracts}
+      # List of revised contracts
+      Contracts.addContractsFromDict(self, new_contracts=all_option_contracts)
 
-        # List of revised contracts
-        Contracts.addContractsFromDict(self, new_contracts=all_option_contracts)
-
-        # Provide Data to satisfy various strategies - only give them what they need
-        if self.marketState == MarketState.JustOpened:
-          for key, value in all_option_contracts.items():
-            self.allcontracts[key].open_price = all_option_contracts[key].close_price
-            self.allcontracts[key].open_price_time = datetime.now
-                    
-        # Strategy #1 - Top 10 contracts based on % gain from open      
-        if len(self.contractstoberemoved) > 0:
-          if self.removeOptionsContracts(self.contractstoberemoved):
-            # Handle them
-            self.contractstoberemoved = {}
-        if len(self.contractstobeadded) > 0:
-          if self.addOptionsContracts(self.contractstobeadded):
-            # Handle
-            self.contractstobeadded = {}
+      # Provide Data to satisfy various strategies - only give them what they need
+      if self.lastMarketState == MarketState.JustOpened:
+        for key, value in all_option_contracts.items():
+          self.allcontracts[key].open_price = all_option_contracts[key].close_price
+          self.allcontracts[key].open_price_time = datetime.now
+                  
+      # Strategy #1 - Top 10 contracts based on % gain from open      
+      if len(self.contractstoberemoved) > 0:
+        if self.removeOptionsContracts(self.contractstoberemoved):
+          # Handle them
+          self.contractstoberemoved = {}
+      if len(self.contractstobeadded) > 0:
+        if self.addOptionsContracts(self.contractstobeadded):
+          # Handle
+          self.contractstobeadded = {}
 
       time.sleep(30)
 
