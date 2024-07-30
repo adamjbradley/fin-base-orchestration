@@ -56,7 +56,7 @@ if __name__ == '__main__':
     controller = KafkaProducer("control-topic")
     controller.start("Controller started")
 
-    all_symbols = ['META', 'AAPL', 'SPY', 'QQQ', 'TSLA','NVDA', 'MSFT', 'AMD']
+    all_symbols = ['META', 'AAPL', 'SPY', 'QQQ', 'TSLA','NVDA', 'MSFT', 'AMD', 'NFLX']
 
     heartbeat_command = build_control_command("controlclient", "heartbeat", None)
     get_underlyings_command = build_control_command("controlclient", "getuderlyings", all_symbols)

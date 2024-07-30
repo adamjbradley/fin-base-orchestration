@@ -18,6 +18,8 @@ from kafkaproducer import KafkaProducer
 from kafkaconsumerthreaded import KafkaConsumer
 from tradingstrategy import Strategy
 
+from config import ALPACA_CONFIG
+
 import random
 
 # Please change the following to your own PAPER api key and secret
@@ -26,8 +28,11 @@ import random
 # Alpaca WebSocket Client
 # From https://github.com/alpacahq/alpaca-py/blob/master/examples/options-trading-basic.ipynb
 
-api_key = "PKZA540BTUN9GXU7WFYV"
-secret_key = "MyklsxHB1K6aqcAZHeGhnMeOYl8h1wCq0c0fwvk1"
+api_key = ALPACA_CONFIG.API_KEY
+secret_key = ALPACA_CONFIG.API_SECRET
+
+#api_key = "PKZA540BTUN9GXU7WFYV"
+#secret_key = "MyklsxHB1K6aqcAZHeGhnMeOYl8h1wCq0c0fwvk1"
 
 #### We use paper environment for this example ####
 paper = True # Please do not modify this. This example is for paper trading only.
