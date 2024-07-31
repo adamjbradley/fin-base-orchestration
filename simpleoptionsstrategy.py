@@ -8,6 +8,10 @@ from lumibot.entities import Asset, TradingFee
 from lumibot.strategies.strategy import Strategy
 from lumibot.traders import Trader
 
+# importing the alpaca broker class
+from lumibot.brokers import Alpaca
+import config as ALPACA_CONFIG
+
 from datetime import datetime, timedelta
 
 
@@ -47,21 +51,29 @@ class SimpleOptionStrategy(Strategy):
 
         # Initialize our variables
         self.take_profit_threshold = 0.001  # 0.015
-        self.sleeptime = "1H"
+        self.sleeptime = "5m"
         self.total_trades = 0
         self.max_trades = 4
         self.max_days_expiry = 15
         self.days_to_earnings_min = 100  # 15
         self.exchange = "SMART"
+        self.strike_width = 10
+
+        self.trade_calls = True
+        self.trade_puts = True
+
+        self.all_buy_signals = dict()
 
         # Stock expected to move.
-        #self.symbols_universe = ['META', 'AAPL', 'SPY', 'QQQ', 'TSLA','NVDA', 'MSFT', 'AMD', 'NFLX']
-        self.symbols_universe = ['META', 'MSFT', 'AMD']
+        #self.symbols_universe = ['AAPL', 'MSFT', 'AMD', 'META', 'NVDA', 'SPY', 'QQQ', 'TSLA', 'NFLX']
+        #self.symbols_universe = ['AAPL', 'MSFT']
+        #self.symbols_universe = ['AAPL', 'MSFT', 'AMD', 'META', 'NVDA']
+        self.symbols_universe = ['AAPL', 'MSFT', 'AMD', 'META', 'NVDA', 'TSLA', 'NFLX']
 
         # Underlying Asset Objects.
         self.trading_pairs = dict()
         for symbol in self.symbols_universe:
-            self.create_trading_pair(symbol)
+            self.create_trading_pair(symbol)        
 
     def thisFriday(self, referencedate):
         today = None
@@ -72,214 +84,170 @@ class SimpleOptionStrategy(Strategy):
         
         next_friday = today + timedelta(5-today.weekday())      
         return next_friday
-    
 
-    def get_options_prices(self, asset, options, right):
-        for asset, options in self.trading_pairs.items():
+    def get_options_prices(self, asset, options, right, width, beforedate):
 
-            print(
-            f"**** Before starting trading ****\n"
-            f"Time: {self.get_datetime()} "
-            f"Retrieving Data for : {asset.symbol} "
-            f"Cash: {self.cash}, Value: {self.portfolio_value}  "
-            f"*******  END ELAPSED TIME  "
-            f"{(time.time() - self.time_start):5.0f}   "
-            f"*******"
-            )
+        # We're only interested in options chains that expire before this Friday
+        multiplier = self.get_multiplier(options["chains"])
+                
+        strike_expiration = {}
+        strike_greeks_calls = {}
+        for index, values in options['chains']['Chains'][str(right).upper()].items():
+                        
+            if datetime.strptime(index, '%Y-%m-%d').date() > beforedate:
+                break
+            else:
 
-            #try:
-            #    if not options["chains"]:
-            #        options["chains"] = self.get_chains(asset)
-            #except Exception as e:
-            #    logging.info(f"Error: {e}")
-            #    continue
+                try:               
+                    last_price = self.get_last_price(asset)
+                    options["underlying_price"] = last_price
+                    assert last_price != 0
+                except:
+                    logging.warning(f"Unable to get price data for {asset.symbol}.")
+                    options["underlying_price"] = 0
+                    continue 
 
-            try:               
-                last_price = self.get_last_price(asset)
-                options["price_underlying"] = last_price
-                assert last_price != 0
-            except:
-                logging.warning(f"Unable to get price data for {asset.symbol}.")
-                options["price_underlying"] = 0
-                continue      
+                strike_price = 0
+                previous_strike_price = 0
+                strike_index = 0
+                atm_index = 0
+                strike_price = 0
+                for strike in values:
+                    strike_price = round(strike)
+                    if previous_strike_price <= round(options["underlying_price"]) and strike_price > round(options["underlying_price"]):
+                        atm_index = strike_index
+                        break
+                    previous_strike_price = strike
+                    strike_index += 1
 
-            # We're only interested in options chains that expire before this coming Friday
-            multiplier = self.get_multiplier(options["chains"])
-            friday_date = self.thisFriday(self.get_datetime()).date()
+                #10 strikes - 5 above and 5 below
+                upper = values[atm_index+width]
+                lower = values[atm_index-width]
 
-            strike_expiration = {}
-            strike_greeks_calls = {}
-            for index, values in options['chains']['Chains']['CALL'].items():
-                            
-                if datetime.strptime(index, '%Y-%m-%d').date() >= friday_date:
-                    break
-                else:
-
-                    for strike in values:
-
-                        strike_price = round(strike)      
-                        upper = options["price_underlying"] + (options["price_underlying"] * 0.05)
-                        lower = options["price_underlying"] - (options["price_underlying"] * 0.05)
-
-                        if strike_price > lower and strike_price < upper:                        
-                            call_asset = Asset(asset.symbol, expiration=datetime.strptime(index, '%Y-%m-%d').date(), strike=strike_price, asset_type="option", right="call", multiplier=multiplier)
-                            #calls = self.get_greeks(call_asset, query_greeks=True)                       
-
-                            calls = self.get_last_price(call_asset)
+                for strike_price in values:                                    
+                    if strike_price > lower and strike_price < upper:                        
+                        asset = Asset(asset.symbol, expiration=datetime.strptime(index, '%Y-%m-%d').date(), strike=str(strike_price), asset_type="option", right=right, multiplier=multiplier)
+                                            
+                        calls = self.get_last_price(asset)
+                        if calls is not None:
                             strike_greeks_calls[strike_price] = calls
 
-                            #if calls["option_price"] is not None:
-                            #    calls["right"] = "call"
-                            #    strike_greeks_calls[strike_price] = calls
-                        
-                        strike_expiration[index] = strike_greeks_calls
+                        #calls = self.get_greeks(call_asset, query_greeks=True)   
+                        #if calls["option_price"] is not None:
+                        #    calls["right"] = "call"
+                        #    strike_greeks_calls[strike_price] = calls
+                    
+                            strike_expiration[index] = strike_greeks_calls
 
-            options["calls"] = strike_expiration
-
-
-            strike_expiration = {}
-            strike_greeks_puts = {}
-            for index, values in options['chains']['Chains']['PUT'].items():            
-                if datetime.strptime(index, '%Y-%m-%d').date() >= friday_date:
-                    break
-                else:
-
-                    for strike in values:
-
-                        strike_price = round(strike)              
-                        upper = options["price_underlying"] + (options["price_underlying"] * 0.05)
-                        lower = options["price_underlying"] - (options["price_underlying"] * 0.05)
-
-                        if strike_price > lower and strike_price < upper:                       
-
-                            put_asset = Asset(asset.symbol, expiration=datetime.strptime(index, '%Y-%m-%d').date(), strike=strike_price, asset_type="option", right="put", multiplier=multiplier)
-                            #puts = self.get_greeks(put_asset, query_greeks=True)
-
-                            puts = self.get_last_price(put_asset)
-                            strike_greeks_calls[strike_price] = puts
-
-                            #if puts["option_price"] is not None:
-                            #    puts["right"] = "put"
-                            #    strike_greeks_puts[strike_price] = puts
-                        
-                        strike_expiration[index] = strike_greeks_puts
-
-            options["puts"] = strike_expiration
-
-            if not options["buy_call_strike"] or not options["buy_put_strike"]:
-                logging.info(f"No options data for {asset.symbol}")
-                continue
-
-
-
-
+        options[right] = strike_expiration
+        return strike_expiration
 
     def before_starting_trading(self):
         """Create the option assets object for each underlying. """
         self.asset_gen = self.asset_cycle(self.trading_pairs.keys())
+        friday_date = self.thisFriday(self.get_datetime()).date()
 
-
-        for asset, options in self.trading_pairs.items():
-
-
-            print(
+        print(
             f"**** Before starting trading ****\n"
-            f"Time: {self.get_datetime()} "
-            f"Retrieving Data for : {asset.symbol} "
+            f"Time: {self.get_datetime()} " 
             f"Cash: {self.cash}, Value: {self.portfolio_value}  "
+            f"Watching contracts which expire before: {friday_date} "
             f"*******  END ELAPSED TIME  "
             f"{(time.time() - self.time_start):5.0f}   "
             f"*******"
-            )
+        )
+        pass
 
+        for asset, options in self.trading_pairs.items():      
             try:
-                if not options["chains"]:
-                    options["chains"] = self.get_chains(asset)
+                options["chains"] = self.get_chains(asset)
             except Exception as e:
                 logging.info(f"Error: {e}")
                 continue
 
             try:               
                 last_price = self.get_last_price(asset)
-                options["price_underlying"] = last_price
+                options["open_price"] = last_price
                 assert last_price != 0
             except:
                 logging.warning(f"Unable to get price data for {asset.symbol}.")
-                options["price_underlying"] = 0
+                options["open_price"] = 0
                 continue      
+  
+            if self.trade_calls:
+                calls = self.get_options_prices(asset, options, "call", self.strike_width, friday_date)
+                if calls is not None:
+                    options["open_calls"] = calls
+                    options["last_calls"] = calls
+                    #print(f"{asset.symbol} {calls}")
 
-            calls = self.get_options_prices(asset, options, "call")
-            puts = self.get_options_prices(asset, options, "put")
+            if self.trade_puts:        
+                puts = self.get_options_prices(asset, options, "put", self.strike_width, friday_date)
+                if puts is not None:
+                    options["open_puts"] = puts
+                    options["last_puts"] = puts
+                    #print(f"{asset.symbol} {puts}")
 
-            dothis = False
-            if dothis:
-                # We're only interested in options chains that expire before this coming Friday
-                multiplier = self.get_multiplier(options["chains"])
-                friday_date = self.thisFriday(self.get_datetime()).date()
+            pass
+        
+    def get_differences(self, last_calls, calls):
+        differences = dict()
+        difference = False
+        
+        for call_index, call_value in calls.items():
+            
+            strike_differences = dict()
+            try:
+                last_strikes = last_calls[call_index]
+                print (last_strikes)
 
-                strike_expiration = {}
-                strike_greeks_calls = {}
-                for index, values in options['chains']['Chains']['CALL'].items():
-                                
-                    if datetime.strptime(index, '%Y-%m-%d').date() >= friday_date:
-                        break
-                    else:
+                strikes = calls[call_index]
+                print (strikes)
 
-                        for strike in values:
+                for strike_index, strike_value in strikes.items():
+                    try:
+                        last_strike_value = last_strikes[strike_index]
+                        if strike_value != last_strike_value:
+                            strike_differences[strike_index] = strike_value            
+                    except:
+                        pass                                                                
+            except:
+                pass
 
-                            strike_price = round(strike)      
-                            upper = options["price_underlying"] + (options["price_underlying"] * 0.05)
-                            lower = options["price_underlying"] - (options["price_underlying"] * 0.05)
+            differences[call_index] = strike_differences
+        
+        print (differences)
+        return differences
 
-                            if strike_price > lower and strike_price < upper:                        
-                                call_asset = Asset(asset.symbol, expiration=datetime.strptime(index, '%Y-%m-%d').date(), strike=strike_price, asset_type="option", right="call", multiplier=multiplier)
-                                #calls = self.get_greeks(call_asset, query_greeks=True)                       
+    def get_buy_signals(self, open_calls, calls):
+        differences = dict()
+        difference = False
+        
+        for call_index, call_value in calls.items():
+            
+            strike_differences = dict()
+            try:
+                open_strikes = open_calls[call_index]
+                #print (open_strikes)
 
-                                calls = self.get_last_price(call_asset)
-                                strike_greeks_calls[strike_price] = calls
+                strikes = calls[call_index]
+                #print (strikes)
 
-                                #if calls["option_price"] is not None:
-                                #    calls["right"] = "call"
-                                #    strike_greeks_calls[strike_price] = calls
-                            
-                            strike_expiration[index] = strike_greeks_calls
+                for strike_index, strike_value in strikes.items():
+                    try:
 
-                options["calls"] = strike_expiration
+                        open_strike_value = open_strikes[strike_index]
+                        if strike_value > open_strike_value:
+                            strike_differences[strike_index] = strike_value - open_strike_value
+                    except:
+                        pass                                                                
+            except:
+                pass
 
-
-                strike_expiration = {}
-                strike_greeks_puts = {}
-                for index, values in options['chains']['Chains']['PUT'].items():            
-                    if datetime.strptime(index, '%Y-%m-%d').date() >= friday_date:
-                        break
-                    else:
-
-                        for strike in values:
-
-                            strike_price = round(strike)              
-                            upper = options["price_underlying"] + (options["price_underlying"] * 0.05)
-                            lower = options["price_underlying"] - (options["price_underlying"] * 0.05)
-
-                            if strike_price > lower and strike_price < upper:                       
-
-                                put_asset = Asset(asset.symbol, expiration=datetime.strptime(index, '%Y-%m-%d').date(), strike=strike_price, asset_type="option", right="put", multiplier=multiplier)
-                                #puts = self.get_greeks(put_asset, query_greeks=True)
-
-                                puts = self.get_last_price(put_asset)
-                                strike_greeks_calls[strike_price] = puts
-
-                                #if puts["option_price"] is not None:
-                                #    puts["right"] = "put"
-                                #    strike_greeks_puts[strike_price] = puts
-                            
-                            strike_expiration[index] = strike_greeks_puts
-
-                options["puts"] = strike_expiration
-
-            if not options["buy_call_strike"] or not options["buy_put_strike"]:
-                logging.info(f"No options data for {asset.symbol}")
-                continue
-
+            differences[call_index] = strike_differences
+        
+        #print (differences)
+        return differences
 
     def on_trading_iteration(self):
         value = self.portfolio_value
@@ -287,148 +255,98 @@ class SimpleOptionStrategy(Strategy):
         positions = self.get_tracked_positions()
         filled_assets = [p.asset for p in positions]
         trade_cash = self.portfolio_value / (self.max_trades * 2)
+        friday_date = self.thisFriday(self.get_datetime()).date()
+        
+        calls = {}
+        buy_signals = None
+        buy_call_signals = None
+        buy_put_signals = None
 
         # Await market to open (on_trading_iteration will stop running until the market opens)
-        enableSell = False
-        if enableSell:
-            # Sell positions:
-            for asset, options in self.trading_pairs.items():
+        #self.await_market_to_open()
+  
+        for asset, options in self.trading_pairs.items():        
+            #print(f"{asset.symbol}")
 
-                if self.minutes_before_opening == 0:
-                    if options["call"] in filled_assets:
-                        options["open_price_call"] = options["call"].strike
-                    if options["put"] in filled_assets:
-                        options["open_price_put"] = options["put"].strike
-                    
-                    
-                if (
-                    options["call"] not in filled_assets
-                    and options["put"] not in filled_assets
-                ):
-                    continue
+            # See if we've got new highs
+            if self.trade_calls:
+                calls = self.get_options_prices(asset, options, "call", self.strike_width, friday_date)
+                
+                if (options["last_calls"] == None):
+                    options["last_calls"] = options["open_calls"]
+                #differences = self.get_differences(options["last_calls"], calls)
+                buy_call_signals = self.get_buy_signals(options["open_calls"], calls)
+                
+                # Save the old set of calls
+                options["last_calls"] = calls                
+                #print(f"{asset.symbol} {calls}")
 
-                if options["status"] > 1:
-                    continue
+            if self.trade_puts:            
+                puts = self.get_options_prices(asset, options, "put", self.strike_width, friday_date)
+                if (options["last_puts"] == None):
+                    options["last_puts"] = options["open_puts"]
+                #differences = self.get_differences(options["last_puts"], puts)
+                buy_put_signals = self.get_buy_signals(options["open_puts"], calls)
 
-                last_price = self.get_last_price(asset)
-                if last_price == 0:
-                    continue
+                # Save the old set of puts
+                options["last_puts"] = puts
+                #print(f"{asset.symbol} {puts}")
 
-                # The sell signal will be the maximum percent movement of original price
-                # away from strike, greater than the take profit threshold.
-                price_move = max(
-                    [
-                        (last_price - options["call"].strike),
-                        (options["put"].strike - last_price),
-                    ]
-                )
 
-                if price_move / options["price_underlying"] > self.take_profit_threshold:
-                    # Create order
-                    order = self.create_order(
-                        asset,
-                        10,
-                        "buy_to_open",
-                    )
 
-                    # Submit order
-                    #self.submit_order(order)
+            ###
+            # Buy 
+            ###
 
-                    # Log a message
-                    self.log_message(f"Bought {order.quantity} of {asset}")
+            if self.trade_calls:
+                for index, signal in buy_call_signals.items():
+                    # Calculate the strike price (round to nearest 1)                
+                    underlying_price = self.get_last_price(asset)
+                    self.log_message(f"The value of {asset} is {underlying_price}")
+                    strike = round(underlying_price)
 
-                    options["status"] = 2
-                    self.total_trades -= 1
+                    try:
+                        buy_signal = self.all_buy_signals[asset.symbol + str(strike) + "C"]
+                        pass
+                    except:
+                        expiry = datetime.strptime(next(iter(options["last_calls"])), '%Y-%m-%d').date()
+                        # Create options asset
+                        _asset = Asset(
+                            symbol=asset.symbol,
+                            asset_type="option",
+                            expiration=expiry,
+                            strike=strike,
+                            right="call",
+                        )
 
-        enableBuy = False
-        if enableBuy:
-            # Create positions:
-            if self.total_trades >= self.max_trades:
-                return
+                        self.submit_buy_order(_asset)
+                        self.all_buy_signals[asset.symbol + str(strike) + "C"] = asset
 
-            for _ in range(len(self.trading_pairs.keys())):
-                if self.total_trades >= self.max_trades:
-                    break
+            if self.trade_puts:
+                for index, signal in buy_put_signals.items():
+                    # Calculate the strike price (round to nearest 1)                
+                    underlying_price = self.get_last_price(asset)
+                    self.log_message(f"The value of {asset} is {underlying_price}")
+                    strike = round(underlying_price)
 
-                asset = next(self.asset_gen)
-                options = self.trading_pairs[asset]
-                if options["status"] > 0:
-                    continue
+                    try:
+                        buy_signal = self.all_buy_signals[asset.symbol + str(strike) + "P"]
+                        pass
+                    except:
+                        expiry = datetime.strptime(next(iter(options["last_puts"])), '%Y-%m-%d').date()
+                        # Create options asset
+                        _asset = Asset(
+                            symbol=asset.symbol,
+                            asset_type="option",
+                            expiration=expiry,
+                            strike=strike,
+                            right="put",
+                        )
 
-                # Check for symbol in positions.
-                if len([p.symbol for p in positions if p.symbol == asset.symbol]) > 0:
-                    continue
-                # Check if options already traded.
-                if options["call"] in filled_assets or options["put"] in filled_assets:
-                    continue
+                        self.submit_buy_order(_asset)
+                        self.all_buy_signals[asset.symbol + str(strike) + "P"] = asset
 
-                # Get the latest prices for stock and options.
-                try:
-                    print(asset, options["call"], options["put"])
-                    asset_prices = self.get_last_prices(
-                        [asset, options["call"], options["put"]]
-                    )
-                    assert len(asset_prices) == 3
-                except:
-                    logging.info(f"Failed to get price data for {asset.symbol}")
-                    continue
 
-                options["price_underlying"] = asset_prices[asset]
-                options["price_call"] = asset_prices[options["call"]]
-                options["price_put"] = asset_prices[options["put"]]
-
-                # Check to make sure date is not too close to earnings.
-                print(f"Getting earnings date for {asset.symbol}")
-                edate_df = Ticker(asset.symbol).calendar
-                if edate_df is None:
-                    print(
-                        f"There was no calendar information for {asset.symbol} so it "
-                        f"was not traded."
-                    )
-                    continue
-                edate = edate_df.iloc[0, 0].date()
-                current_date = datetime.datetime.now().date()
-                days_to_earnings = (edate - current_date).days
-                if days_to_earnings > self.days_to_earnings_min:
-                    logging.info(
-                        f"{asset.symbol} is too far from earnings at" f" {days_to_earnings}"
-                    )
-                    continue
-
-                options["trade_created_time"] = datetime.datetime.now()
-
-                quantity_call = int(
-                    trade_cash / (options["price_call"] * options["call"].multiplier)
-                )
-                quantity_put = int(
-                    trade_cash / (options["price_put"] * options["put"].multiplier)
-                )
-
-                # Check to see if the trade size it too big for cash available.
-                if quantity_call == 0 or quantity_put == 0:
-                    options["status"] = 2
-                    continue
-
-                # Buy call.
-                options["call_order"] = self.create_order(
-                    options["call"],
-                    quantity_call,
-                    "buy",
-                    exchange=self.exchange
-                )
-                #self.submit_order(options["call_order"])
-
-                # Buy put.
-                options["put_order"] = self.create_order(
-                    options["put"],
-                    quantity_put,
-                    "buy",
-                    exchange=self.exchange
-                )
-                #self.submit_order(options["put_order"])
-
-                self.total_trades += 1
-                options["status"] = 1
 
         positions = self.get_tracked_positions()
         filla = [pos.asset for pos in positions]
@@ -447,9 +365,25 @@ class SimpleOptionStrategy(Strategy):
 
         # self.await_market_to_close()
 
+    def submit_buy_order(self, asset):
+        # Create order
+        order = self.create_order(
+            asset.symbol,
+            1,
+            "buy_to_open",
+        )
+    
+        # Submit order
+        self.submit_order(order)
+
+        # Log a message
+        message = (f"Bought {order.quantity} of {asset}")
+        self.log_message(message)
+        print(message)
+
     def before_market_closes(self):
         self.sell_all()
-        self.trading_pairs = dict()
+        self.all_buy_signals = dict()
 
     def on_abrupt_closing(self):
         self.sell_all()
@@ -467,6 +401,8 @@ class SimpleOptionStrategy(Strategy):
             "buy_call_strike": None,
             "buy_put_strike": None,
             "expiration_date": None,
+            "open_price": None,
+            "close_price": None,
             "price_underlying": None,
             "price_call": None,
             "price_put": None,
@@ -478,6 +414,10 @@ class SimpleOptionStrategy(Strategy):
             "status": 0,      
             "puts": None,
             "calls": None,
+            "open_puts": None,
+            "open_calls": None,
+            "last_calls": None,
+            "last_puts": None,
         }
 
     def asset_cycle(self, assets):
@@ -532,23 +472,18 @@ class SimpleOptionStrategy(Strategy):
         return expiration_date
     
 
-
-
-
 if __name__ == "__main__":
     is_live = False
 
     if is_live:
-        from credentials import INTERACTIVE_BROKERS_CONFIG
-
+  
         from lumibot.brokers import InteractiveBrokers
         from lumibot.traders import Trader
 
         trader = Trader()
-
-        broker = InteractiveBrokers(INTERACTIVE_BROKERS_CONFIG)
-        strategy = Strangle(broker=broker)
-
+        broker = Alpaca(ALPACA_CONFIG)
+        strategy = SimpleOptionStrategy(name="Simple Options Strategy", budget=100000, broker=broker, symbol="SPY")
+        
         trader.add_strategy(strategy)
         strategy_executors = trader.run_all()
 
@@ -556,8 +491,8 @@ if __name__ == "__main__":
         from lumibot.backtesting import PolygonDataBacktesting
 
         # Backtest this strategy
-        backtesting_start = datetime(2024, 7, 25)
-        backtesting_end = datetime(2024, 7, 29)
+        backtesting_start = datetime(2024, 7, 22)
+        backtesting_end = datetime(2024, 7, 30)
 
 
         SimpleOptionStrategy.backtest(
