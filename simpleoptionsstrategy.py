@@ -51,7 +51,7 @@ class SimpleOptionStrategy(Strategy):
 
         # Initialize our variables
         self.take_profit_threshold = 0.001  # 0.015
-        self.sleeptime = "5m"
+        self.sleeptime = "1H"
         self.total_trades = 0
         self.max_trades = 4
         self.max_days_expiry = 15
@@ -235,7 +235,6 @@ class SimpleOptionStrategy(Strategy):
 
                 for strike_index, strike_value in strikes.items():
                     try:
-
                         open_strike_value = open_strikes[strike_index]
                         if strike_value > open_strike_value:
                             strike_differences[strike_index] = strike_value - open_strike_value
@@ -248,6 +247,64 @@ class SimpleOptionStrategy(Strategy):
         
         #print (differences)
         return differences
+    
+
+    def get_buy_signalsNG(self, open_calls, calls, symbol, right):
+        differences = dict()
+        difference = False
+
+        strike_signals = dict()
+
+        for call_index, call_value in calls.items():
+            
+            strike_differences = dict()
+            try:
+                open_strikes = open_calls[call_index]
+                strikes = calls[call_index]
+
+                for strike_index, strike_value in strikes.items():
+                    try:
+                        open_strike_value = open_strikes[strike_index]
+                        if strike_value > open_strike_value:
+                            strike_signals[symbol + str(strike_index) + right] = strike_value - open_strike_value
+                    except:
+                        pass                                                                
+            except:
+                pass
+
+        return strike_signals
+
+
+    def get_sell_signals(self, open_calls, calls, symbol, right):
+        differences = dict()
+        difference = False
+
+        strike_signals = dict()
+
+        for call_index, call_value in calls.items():
+            
+            strike_differences = dict()
+            try:
+                open_strikes = open_calls[call_index]
+                strikes = calls[call_index]
+
+                for strike_index, strike_value in strikes.items():
+                    try:
+                        open_strike_value = open_strikes[strike_index]
+                        if strike_value < open_strike_value:                            
+                            strike_signals[symbol + str(strike_index) + right] = strike_value - open_strike_value
+                        elif strike_value > (open_strike_value * 2):
+                            strike_signals[symbol + str(strike_index) + right] = strike_value - open_strike_value
+                        
+                            pass
+                    except:
+                        pass                                                                
+            except:
+                pass
+
+        return strike_signals
+
+
 
     def on_trading_iteration(self):
         value = self.portfolio_value
@@ -260,7 +317,13 @@ class SimpleOptionStrategy(Strategy):
         calls = {}
         buy_signals = None
         buy_call_signals = None
+        buy_call_signals = None
+
         buy_put_signals = None
+        buy_call_signals = None
+
+        sell_put_signals = None
+        sell_call_signals = None
 
         # Await market to open (on_trading_iteration will stop running until the market opens)
         #self.await_market_to_open()
@@ -276,6 +339,8 @@ class SimpleOptionStrategy(Strategy):
                     options["last_calls"] = options["open_calls"]
                 #differences = self.get_differences(options["last_calls"], calls)
                 buy_call_signals = self.get_buy_signals(options["open_calls"], calls)
+                buy_call_signalsNG = self.get_buy_signalsNG(options["open_calls"], calls, asset.symbol, "C")
+                sell_call_signals = self.get_sell_signals(options["open_calls"], calls, asset.symbol, "C")
                 
                 # Save the old set of calls
                 options["last_calls"] = calls                
@@ -286,18 +351,65 @@ class SimpleOptionStrategy(Strategy):
                 if (options["last_puts"] == None):
                     options["last_puts"] = options["open_puts"]
                 #differences = self.get_differences(options["last_puts"], puts)
-                buy_put_signals = self.get_buy_signals(options["open_puts"], calls)
+                buy_put_signals = self.get_buy_signals(options["open_puts"], puts)
+                buy_put_signalsNG = self.get_buy_signalsNG(options["open_puts"], puts, asset.symbol, "P")
+                sell_put_signals = self.get_sell_signals(options["open_puts"], puts, asset.symbol, "C")
 
                 # Save the old set of puts
                 options["last_puts"] = puts
                 #print(f"{asset.symbol} {puts}")
 
 
+            ###
+            # Sell 
+            ###
+            if self.trade_calls:
+                for index, signal in sell_call_signals.items():
+                    try:
+                        sell_this = self.all_buy_signals[index]
+                        pass
 
+                        _asset = Asset(
+                            symbol=sell_this.symbol,
+                            asset_type=sell_this.asset_type,
+                            expiration=sell_this.expiration,
+                            strike=sell_this.strike,
+                            right=sell_this.right,
+                        )
+
+                        # Submit order
+                        self.submit_sell_order(_asset)
+                        del self.all_buy_signals[index]   
+
+                    except:
+                        pass
+
+
+            if self.trade_puts:
+                for index, signal in sell_put_signals.items():
+                    try:
+                        sell_this = self.all_buy_signals[index]
+                        pass
+
+                        _asset = Asset(
+                            symbol=sell_this.symbol,
+                            asset_type=sell_this.asset_type,
+                            expiration=sell_this.expiration,
+                            strike=sell_this.strike,
+                            right=sell_this.right,
+                        )
+                        
+                        # Submit order
+                        self.submit_sell_order(_asset)
+                        del self.all_buy_signals[index]                        
+                        
+                    except:
+                        pass
+
+                
             ###
             # Buy 
             ###
-
             if self.trade_calls:
                 for index, signal in buy_call_signals.items():
                     # Calculate the strike price (round to nearest 1)                
@@ -320,7 +432,7 @@ class SimpleOptionStrategy(Strategy):
                         )
 
                         self.submit_buy_order(_asset)
-                        self.all_buy_signals[asset.symbol + str(strike) + "C"] = asset
+                        self.all_buy_signals[asset.symbol + str(strike) + "C"] = _asset
 
             if self.trade_puts:
                 for index, signal in buy_put_signals.items():
@@ -344,7 +456,7 @@ class SimpleOptionStrategy(Strategy):
                         )
 
                         self.submit_buy_order(_asset)
-                        self.all_buy_signals[asset.symbol + str(strike) + "P"] = asset
+                        self.all_buy_signals[asset.symbol + str(strike) + "P"] = _asset
 
 
 
@@ -368,7 +480,7 @@ class SimpleOptionStrategy(Strategy):
     def submit_buy_order(self, asset):
         # Create order
         order = self.create_order(
-            asset.symbol,
+            asset,
             1,
             "buy_to_open",
         )
@@ -380,6 +492,22 @@ class SimpleOptionStrategy(Strategy):
         message = (f"Bought {order.quantity} of {asset}")
         self.log_message(message)
         print(message)
+
+    def submit_sell_order(self, asset):
+        # Create order
+        order = self.create_order(
+            asset,
+            1,
+            "sell_to_close",
+        )
+    
+        # Submit order
+        self.submit_order(order)
+
+        # Log a message
+        message = (f"Sold {order.quantity} of {asset}")
+        self.log_message(message)
+        print(message)        
 
     def before_market_closes(self):
         self.sell_all()
@@ -491,7 +619,7 @@ if __name__ == "__main__":
         from lumibot.backtesting import PolygonDataBacktesting
 
         # Backtest this strategy
-        backtesting_start = datetime(2024, 7, 22)
+        backtesting_start = datetime(2024, 7, 1)
         backtesting_end = datetime(2024, 7, 30)
 
 
